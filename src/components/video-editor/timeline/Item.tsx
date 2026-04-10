@@ -28,6 +28,10 @@ const ZOOM_LABELS: Record<number, string> = {
 	6: "5×",
 };
 
+const MIN_ITEM_PX = 8;
+const MIN_ITEM_CONTENT_PX = 28;
+const RESIZE_HANDLE_PX = 10;
+
 function formatMs(ms: number): string {
 	const totalSeconds = ms / 1000;
 	const minutes = Math.floor(totalSeconds / 60);
@@ -86,7 +90,6 @@ export default function Item({
 		[span.start, span.end],
 	);
 
-	const MIN_ITEM_PX = 6;
 	const safeItemStyle = { ...itemStyle, minWidth: MIN_ITEM_PX };
 
 	return (
@@ -98,14 +101,14 @@ export default function Item({
 			onPointerDownCapture={() => onSelect?.()}
 			className="group"
 		>
-			<div style={{ ...itemContentStyle, minWidth: 24 }}>
+			<div style={{ ...itemContentStyle, minWidth: MIN_ITEM_CONTENT_PX }}>
 				<div
 					className={cn(
 						glassClass,
 						"w-full h-full overflow-hidden flex items-center justify-center gap-1.5 cursor-grab active:cursor-grabbing relative",
 						isSelected && glassStyles.selected,
 					)}
-					style={{ height: 40, color: "#fff", minWidth: 24 }}
+					style={{ height: 40, color: "#fff", minWidth: MIN_ITEM_CONTENT_PX }}
 					onClick={(event) => {
 						event.stopPropagation();
 						onSelect?.();
@@ -116,7 +119,7 @@ export default function Item({
 						style={{
 							cursor: "col-resize",
 							pointerEvents: "auto",
-							width: 8,
+							width: RESIZE_HANDLE_PX,
 							opacity: 0.9,
 							background: endCapColor,
 						}}
@@ -127,7 +130,7 @@ export default function Item({
 						style={{
 							cursor: "col-resize",
 							pointerEvents: "auto",
-							width: 8,
+							width: RESIZE_HANDLE_PX,
 							opacity: 0.9,
 							background: endCapColor,
 						}}

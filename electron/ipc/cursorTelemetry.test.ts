@@ -8,6 +8,7 @@ import {
 	normalizeCursorPointForBounds,
 	normalizeHookMouseButton,
 } from "./cursorTelemetry";
+import { getDisplayBoundsForSource } from "./windowBounds";
 
 describe("cursorTelemetry helpers", () => {
 	it("normalizes hook mouse button codes", () => {
@@ -54,6 +55,41 @@ describe("cursorTelemetry helpers", () => {
 				height: 200,
 			}),
 		).toBeNull();
+	});
+
+	it("normalizes cursor points using selected window bounds or selected display provenance", () => {
+		const selectedWindowBounds = getWindowBoundsFromNativeSource({
+			id: "window:7",
+			name: "Docs",
+			x: 320,
+			y: 180,
+			width: 1280,
+			height: 720,
+		});
+
+		expect(selectedWindowBounds).toEqual({
+			x: 320,
+			y: 180,
+			width: 1280,
+			height: 720,
+		});
+		expect(normalizeCursorPointForBounds({ x: 960, y: 540 }, selectedWindowBounds!)).toEqual({
+			cx: 0.5,
+			cy: 0.5,
+		});
+
+		const primaryDisplayBounds = { x: 0, y: 0, width: 1920, height: 1080 };
+		const selectedDisplayBounds = getDisplayBoundsForSource(
+			{ id: "screen:2", name: "Display 2", display_id: "999" },
+			[{ id: 2, bounds: { x: 1920, y: 0, width: 2560, height: 1440 } }],
+			primaryDisplayBounds,
+		);
+
+		expect(selectedDisplayBounds).toEqual(primaryDisplayBounds);
+		expect(normalizeCursorPointForBounds({ x: 960, y: 540 }, selectedDisplayBounds)).toEqual({
+			cx: 0.5,
+			cy: 0.5,
+		});
 	});
 
 	it("merges pending cursor samples without duplicating past timestamps", () => {

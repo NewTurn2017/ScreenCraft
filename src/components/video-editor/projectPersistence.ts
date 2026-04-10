@@ -31,6 +31,7 @@ import {
 } from "./types";
 
 export const PROJECT_VERSION = 1;
+const LEGACY_DEFAULT_CURSOR_SMOOTHING = 0.67;
 
 export interface ProjectEditorState {
 	wallpaper: string;
@@ -74,6 +75,17 @@ function isFiniteNumber(value: unknown): value is number {
 
 function clamp(value: number, min: number, max: number) {
 	return Math.min(max, Math.max(min, value));
+}
+
+function normalizeCursorSmoothing(value: unknown) {
+	if (!isFiniteNumber(value)) {
+		return DEFAULT_CURSOR_SMOOTHING;
+	}
+
+	const clamped = clamp(value, 0, 2);
+	return Math.abs(clamped - LEGACY_DEFAULT_CURSOR_SMOOTHING) < 0.0001
+		? DEFAULT_CURSOR_SMOOTHING
+		: clamped;
 }
 
 function isFileUrl(value: string): boolean {
@@ -358,10 +370,11 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 	const webcam: Partial<WebcamOverlaySettings> =
 		editor.webcam && typeof editor.webcam === "object" ? editor.webcam : {};
 	const webcamSourcePath = typeof webcam.sourcePath === "string" ? webcam.sourcePath : null;
-	const legacyZoomScaleEffect =
-		isFiniteNumber((webcam as Partial<{ zoomScaleEffect: number }>).zoomScaleEffect)
-			? (webcam as Partial<{ zoomScaleEffect: number }>).zoomScaleEffect
-			: null;
+	const legacyZoomScaleEffect = isFiniteNumber(
+		(webcam as Partial<{ zoomScaleEffect: number }>).zoomScaleEffect,
+	)
+		? (webcam as Partial<{ zoomScaleEffect: number }>).zoomScaleEffect
+		: null;
 
 	return {
 		wallpaper: typeof editor.wallpaper === "string" ? editor.wallpaper : WALLPAPER_PATHS[0],
@@ -374,9 +387,7 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 		cursorSize: isFiniteNumber(editor.cursorSize)
 			? clamp(editor.cursorSize, 0.5, 10)
 			: DEFAULT_CURSOR_SIZE,
-		cursorSmoothing: isFiniteNumber(editor.cursorSmoothing)
-			? clamp(editor.cursorSmoothing, 0, 2)
-			: DEFAULT_CURSOR_SMOOTHING,
+		cursorSmoothing: normalizeCursorSmoothing(editor.cursorSmoothing),
 		cursorMotionBlur: isFiniteNumber((editor as Partial<ProjectEditorState>).cursorMotionBlur)
 			? clamp((editor as Partial<ProjectEditorState>).cursorMotionBlur as number, 0, 2)
 			: DEFAULT_CURSOR_MOTION_BLUR,

@@ -2092,7 +2092,7 @@ export default function VideoEditor() {
 
 						{/* Timeline section */}
 						<Panel defaultSize={30} minSize={20}>
-							<div className="h-full min-h-0 bg-[#09090b] rounded-2xl border border-white/5 shadow-lg overflow-auto flex flex-col">
+							<div className="h-full min-h-0 bg-[#09090b] rounded-2xl border border-white/5 shadow-lg overflow-hidden flex flex-col">
 								<TimelineEditor
 									videoDuration={duration}
 									currentTime={currentTime}

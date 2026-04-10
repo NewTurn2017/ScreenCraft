@@ -217,7 +217,7 @@ export function SettingsPanel({
 	onLoopCursorChange,
 	cursorSize = 5,
 	onCursorSizeChange,
-	cursorSmoothing = 2,
+	cursorSmoothing = DEFAULT_CURSOR_SMOOTHING,
 	onCursorSmoothingChange,
 	cursorMotionBlur = 0.35,
 	onCursorMotionBlurChange,

@@ -101,6 +101,19 @@ describe("editorPreferences", () => {
 		});
 	});
 
+	it("migrates the old default cursor smoothing to the new accuracy-first default", () => {
+		vi.stubGlobal(
+			"localStorage",
+			createStorageMock({
+				[EDITOR_PREFERENCES_STORAGE_KEY]: JSON.stringify({
+					cursorSmoothing: 0.67,
+				}),
+			}),
+		);
+
+		expect(loadEditorPreferences().cursorSmoothing).toBe(0);
+	});
+
 	it("preserves the last valid custom aspect inputs while typing", () => {
 		const localStorage = createStorageMock({
 			[EDITOR_PREFERENCES_STORAGE_KEY]: JSON.stringify({

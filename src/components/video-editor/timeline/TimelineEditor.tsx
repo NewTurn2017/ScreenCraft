@@ -11,6 +11,7 @@ import {
 	WandSparkles,
 	ZoomIn,
 } from "lucide-react";
+import { flushSync } from "react-dom";
 import {
 	type KeyboardEvent as ReactKeyboardEvent,
 	useCallback,
@@ -55,7 +56,7 @@ import type {
 import Item from "./Item";
 import KeyframeMarkers from "./KeyframeMarkers";
 import Row from "./Row";
-import TimelineWrapper from "./TimelineWrapper";
+import TimelineWrapper, { clampTimelineRange } from "./TimelineWrapper";
 import { detectInteractionCandidates, normalizeCursorTelemetry } from "./zoomSuggestionUtils";
 
 const ZOOM_ROW_ID = "row-zoom";
@@ -64,6 +65,7 @@ const ANNOTATION_ROW_ID = "row-annotation";
 const SPEED_ROW_ID = "row-speed";
 const AUDIO_ROW_ID = "row-audio";
 const FALLBACK_RANGE_MS = 1000;
+const DEFAULT_REGION_DURATION_FLOOR_MS = 1000;
 const TARGET_MARKER_COUNT = 12;
 const SUGGESTION_SPACING_MS = 1800;
 
@@ -198,6 +200,30 @@ function normalizeWheelDeltaToPixels(delta: number, deltaMode: number) {
 	return delta;
 }
 
+function getWheelModifierState(event: WheelEvent<HTMLDivElement>) {
+	const nativeGetModifierState =
+		typeof event.nativeEvent.getModifierState === "function"
+			? event.nativeEvent.getModifierState.bind(event.nativeEvent)
+			: null;
+	const reactGetModifierState =
+		typeof event.getModifierState === "function" ? event.getModifierState.bind(event) : null;
+
+	return {
+		ctrlKey: event.ctrlKey || event.nativeEvent.ctrlKey,
+		metaKey: event.metaKey || event.nativeEvent.metaKey,
+		shiftKey:
+			event.shiftKey ||
+			event.nativeEvent.shiftKey ||
+			reactGetModifierState?.("Shift") ||
+			nativeGetModifierState?.("Shift") ||
+			false,
+		deltaX: event.deltaX || event.nativeEvent.deltaX,
+		deltaY: event.deltaY || event.nativeEvent.deltaY,
+		deltaMode: event.deltaMode ?? event.nativeEvent.deltaMode,
+		clientX: event.clientX || event.nativeEvent.clientX,
+	};
+}
+
 function formatTimeLabel(milliseconds: number, intervalMs: number) {
 	const totalSeconds = milliseconds / 1000;
 	const hours = Math.floor(totalSeconds / 3600);
@@ -234,12 +260,14 @@ function PlaybackCursor({
 	videoDurationMs,
 	onSeek,
 	timelineRef,
+	onAutoPanAtRightEdge,
 	keyframes = [],
 }: {
 	currentTimeMs: number;
 	videoDurationMs: number;
 	onSeek?: (time: number) => void;
 	timelineRef: React.RefObject<HTMLDivElement>;
+	onAutoPanAtRightEdge?: (overflowMs: number) => void;
 	keyframes?: { id: string; time: number }[];
 }) {
 	const { sidebarWidth, direction, range, valueToPixels, pixelsToValue } = useTimelineContext();
@@ -254,6 +282,8 @@ function PlaybackCursor({
 
 			const rect = timelineRef.current.getBoundingClientRect();
 			const clickX = e.clientX - rect.left - sidebarWidth;
+			const visibleSpan = Math.max(1, range.end - range.start);
+			const visibleRightEdgePx = valueToPixels(visibleSpan);
 
 			// Allow dragging outside to 0 or max, but clamp the value
 			const relativeMs = pixelsToValue(clickX);
@@ -273,6 +303,11 @@ function PlaybackCursor({
 			}
 
 			onSeek(absoluteMs / 1000);
+
+			if (clickX >= visibleRightEdgePx) {
+				const overflowMs = Math.max(0, relativeMs - visibleSpan);
+				onAutoPanAtRightEdge?.(overflowMs);
+			}
 		};
 
 		const handleMouseUp = () => {
@@ -291,12 +326,14 @@ function PlaybackCursor({
 		};
 	}, [
 		isDragging,
+		onAutoPanAtRightEdge,
 		onSeek,
 		timelineRef,
 		sidebarWidth,
 		range.start,
 		range.end,
 		videoDurationMs,
+		valueToPixels,
 		pixelsToValue,
 		keyframes,
 	]);
@@ -472,6 +509,7 @@ function Timeline({
 	videoDurationMs,
 	currentTimeMs,
 	onSeek,
+	onAutoPanAtRightEdge,
 	onSelectZoom,
 	onSelectTrim,
 	onSelectAnnotation,
@@ -488,6 +526,7 @@ function Timeline({
 	videoDurationMs: number;
 	currentTimeMs: number;
 	onSeek?: (time: number) => void;
+	onAutoPanAtRightEdge?: (overflowMs: number) => void;
 	onSelectZoom?: (id: string | null) => void;
 	onSelectTrim?: (id: string | null) => void;
 	onSelectAnnotation?: (id: string | null) => void;
@@ -569,6 +608,7 @@ function Timeline({
 				videoDurationMs={videoDurationMs}
 				onSeek={onSeek}
 				timelineRef={localTimelineRef}
+				onAutoPanAtRightEdge={onAutoPanAtRightEdge}
 				keyframes={keyframes}
 			/>
 
@@ -728,7 +768,30 @@ export default function TimelineEditor({
 		zoom: tShortcuts("bindings.zoomTimeline"),
 	});
 	const timelineContainerRef = useRef<HTMLDivElement>(null);
+	const latestVisibleRangeRef = useRef(range);
 	const { shortcuts: keyShortcuts, isMac } = useShortcuts();
+
+	const commitVisibleRangeUpdate = useCallback(
+		(updater: (previous: Range) => Range) => {
+			flushSync(() => {
+				setRange((previous) => {
+					const normalizedPrevious =
+						totalMs > 0
+							? clampTimelineRange(previous, totalMs, timelineScale.minVisibleRangeMs)
+							: previous;
+					const desiredRange = updater(normalizedPrevious);
+					const nextRange =
+						totalMs > 0
+							? clampTimelineRange(desiredRange, totalMs, timelineScale.minVisibleRangeMs)
+							: desiredRange;
+
+					latestVisibleRangeRef.current = nextRange;
+					return nextRange;
+				});
+			});
+		},
+		[timelineScale.minVisibleRangeMs, totalMs],
+	);
 
 	useEffect(() => {
 		if (aspectRatio === "native") {
@@ -958,16 +1021,24 @@ export default function TimelineEditor({
 		[zoomRegions, trimRegions, annotationRegions, speedRegions, audioRegions],
 	);
 
-	// Keep newly added timeline regions at the original short default instead of
-	// scaling them with the full recording length.
-	const defaultRegionDurationMs = useMemo(() => Math.min(1000, totalMs), [totalMs]);
+	const defaultZoomRegionDurationMs = useMemo(
+		() => Math.min(DEFAULT_REGION_DURATION_FLOOR_MS, totalMs),
+		[totalMs],
+	);
+	const defaultTrimSpeedAnnotationDurationMs = useMemo(
+		() =>
+			totalMs > 0
+				? Math.max(DEFAULT_REGION_DURATION_FLOOR_MS, timelineScale.defaultItemDurationMs)
+				: DEFAULT_REGION_DURATION_FLOOR_MS,
+		[timelineScale.defaultItemDurationMs, totalMs],
+	);
 
 	const handleAddZoom = useCallback(() => {
 		if (!videoDuration || videoDuration === 0 || totalMs === 0) {
 			return;
 		}
 
-		const defaultDuration = Math.min(defaultRegionDurationMs, totalMs);
+		const defaultDuration = Math.min(defaultZoomRegionDurationMs, totalMs);
 		if (defaultDuration <= 0) {
 			return;
 		}
@@ -990,9 +1061,17 @@ export default function TimelineEditor({
 			return;
 		}
 
-		const actualDuration = Math.min(defaultRegionDurationMs, gapToNext);
+		const actualDuration = Math.min(defaultZoomRegionDurationMs, gapToNext);
 		onZoomAdded({ start: startPos, end: startPos + actualDuration });
-	}, [videoDuration, totalMs, currentTimeMs, zoomRegions, onZoomAdded, defaultRegionDurationMs, t]);
+	}, [
+		videoDuration,
+		totalMs,
+		currentTimeMs,
+		zoomRegions,
+		onZoomAdded,
+		defaultZoomRegionDurationMs,
+		t,
+	]);
 
 	const handleSuggestZooms = useCallback(() => {
 		if (!videoDuration || videoDuration === 0 || totalMs === 0) {
@@ -1011,7 +1090,7 @@ export default function TimelineEditor({
 			return;
 		}
 
-		const defaultDuration = Math.min(defaultRegionDurationMs, totalMs);
+		const defaultDuration = Math.min(defaultZoomRegionDurationMs, totalMs);
 		if (defaultDuration <= 0) {
 			return;
 		}
@@ -1080,7 +1159,7 @@ export default function TimelineEditor({
 	}, [
 		videoDuration,
 		totalMs,
-		defaultRegionDurationMs,
+		defaultZoomRegionDurationMs,
 		zoomRegions,
 		onZoomSuggested,
 		cursorTelemetry,
@@ -1092,7 +1171,7 @@ export default function TimelineEditor({
 			return;
 		}
 
-		const defaultDuration = Math.min(defaultRegionDurationMs, totalMs);
+		const defaultDuration = Math.min(defaultTrimSpeedAnnotationDurationMs, totalMs);
 		if (defaultDuration <= 0) {
 			return;
 		}
@@ -1115,16 +1194,24 @@ export default function TimelineEditor({
 			return;
 		}
 
-		const actualDuration = Math.min(defaultRegionDurationMs, gapToNext);
+		const actualDuration = Math.min(defaultTrimSpeedAnnotationDurationMs, gapToNext);
 		onTrimAdded({ start: startPos, end: startPos + actualDuration });
-	}, [videoDuration, totalMs, currentTimeMs, trimRegions, onTrimAdded, defaultRegionDurationMs, t]);
+	}, [
+		videoDuration,
+		totalMs,
+		currentTimeMs,
+		trimRegions,
+		onTrimAdded,
+		defaultTrimSpeedAnnotationDurationMs,
+		t,
+	]);
 
 	const handleAddSpeed = useCallback(() => {
 		if (!videoDuration || videoDuration === 0 || totalMs === 0 || !onSpeedAdded) {
 			return;
 		}
 
-		const defaultDuration = Math.min(defaultRegionDurationMs, totalMs);
+		const defaultDuration = Math.min(defaultTrimSpeedAnnotationDurationMs, totalMs);
 		if (defaultDuration <= 0) {
 			return;
 		}
@@ -1147,7 +1234,7 @@ export default function TimelineEditor({
 			return;
 		}
 
-		const actualDuration = Math.min(defaultRegionDurationMs, gapToNext);
+		const actualDuration = Math.min(defaultTrimSpeedAnnotationDurationMs, gapToNext);
 		onSpeedAdded({ start: startPos, end: startPos + actualDuration });
 	}, [
 		videoDuration,
@@ -1155,7 +1242,7 @@ export default function TimelineEditor({
 		currentTimeMs,
 		speedRegions,
 		onSpeedAdded,
-		defaultRegionDurationMs,
+		defaultTrimSpeedAnnotationDurationMs,
 		t,
 	]);
 
@@ -1213,7 +1300,7 @@ export default function TimelineEditor({
 			return;
 		}
 
-		const defaultDuration = Math.min(defaultRegionDurationMs, totalMs);
+		const defaultDuration = Math.min(defaultTrimSpeedAnnotationDurationMs, totalMs);
 		if (defaultDuration <= 0) {
 			return;
 		}
@@ -1223,7 +1310,13 @@ export default function TimelineEditor({
 		const endPos = Math.min(startPos + defaultDuration, totalMs);
 
 		onAnnotationAdded({ start: startPos, end: endPos });
-	}, [videoDuration, totalMs, currentTimeMs, onAnnotationAdded, defaultRegionDurationMs]);
+	}, [
+		videoDuration,
+		totalMs,
+		currentTimeMs,
+		onAnnotationAdded,
+		defaultTrimSpeedAnnotationDurationMs,
+	]);
 
 	useEffect(() => {
 		const handleKeyDown = (e: KeyboardEvent) => {
@@ -1327,6 +1420,8 @@ export default function TimelineEditor({
 			end: Math.min(range.end, totalMs),
 		};
 	}, [range, totalMs]);
+
+	latestVisibleRangeRef.current = clampedRange;
 
 	const timelineItems = useMemo<TimelineRenderItem[]>(() => {
 		const zooms: TimelineRenderItem[] = zoomRegions.map((region, index) => ({
@@ -1439,52 +1534,123 @@ export default function TimelineEditor({
 				return;
 			}
 
-			setRange((previous) => {
+			commitVisibleRangeUpdate((previous) => {
 				const visibleSpan = Math.max(1, previous.end - previous.start);
-				const maxStart = Math.max(0, totalMs - visibleSpan);
-				const nextStart = Math.max(0, Math.min(previous.start + deltaMs, maxStart));
-
 				return {
-					start: nextStart,
-					end: nextStart + visibleSpan,
+					start: previous.start + deltaMs,
+					end: previous.start + deltaMs + visibleSpan,
 				};
 			});
 		},
-		[totalMs],
+		[commitVisibleRangeUpdate, totalMs],
 	);
 
-	const handleTimelineWheel = useCallback(
-		(event: WheelEvent<HTMLDivElement>) => {
-			if (event.ctrlKey || event.metaKey || totalMs <= 0) {
+	const zoomTimelineRange = useCallback(
+		(deltaMs: number, clientX: number) => {
+			if (!Number.isFinite(deltaMs) || deltaMs === 0 || totalMs <= 0) {
 				return;
 			}
 
-			const rawHorizontalDelta =
-				Math.abs(event.deltaX) > 0
-					? event.deltaX
-					: event.shiftKey && Math.abs(event.deltaY) > 0
-						? event.deltaY
-						: 0;
-
-			if (rawHorizontalDelta === 0) {
-				return;
-			}
-
-			const containerWidth = timelineContainerRef.current?.clientWidth ?? 0;
-			const visibleRangeMs = clampedRange.end - clampedRange.start;
+			const container = timelineContainerRef.current;
+			const containerWidth = container?.clientWidth ?? 0;
+			const currentRange = latestVisibleRangeRef.current;
+			const visibleRangeMs = currentRange.end - currentRange.start;
 
 			if (containerWidth <= 0 || visibleRangeMs <= 0) {
 				return;
 			}
 
+			const rect = container?.getBoundingClientRect();
+			const pointerOffset = rect ? clientX - rect.left : containerWidth / 2;
+			const clampedPointerOffset = Math.max(0, Math.min(pointerOffset, containerWidth));
+			const pointerRatio = clampedPointerOffset / containerWidth;
+
+			commitVisibleRangeUpdate(() => ({
+				start: currentRange.start - deltaMs * pointerRatio,
+				end: currentRange.end + deltaMs * (1 - pointerRatio),
+			}));
+		},
+		[commitVisibleRangeUpdate, totalMs],
+	);
+
+	const autoPanPlayheadAtRightEdge = useCallback(
+		(overflowMs: number) => {
+			if (totalMs <= 0) {
+				return;
+			}
+
+			commitVisibleRangeUpdate((previous) => {
+				const visibleSpan = Math.max(1, previous.end - previous.start);
+				const deltaMs = Math.max(timelineScale.minVisibleRangeMs, overflowMs);
+
+				return {
+					start: previous.start + deltaMs,
+					end: previous.start + deltaMs + visibleSpan,
+				};
+			});
+		},
+		[commitVisibleRangeUpdate, timelineScale.minVisibleRangeMs, totalMs],
+	);
+
+	const handleTimelineWheel = useCallback(
+		(event: WheelEvent<HTMLDivElement>) => {
+			if (totalMs <= 0) {
+				return;
+			}
+
+			const { clientX, ctrlKey, deltaMode, deltaX, deltaY, metaKey, shiftKey } =
+				getWheelModifierState(event);
+			const containerWidth = timelineContainerRef.current?.clientWidth ?? 0;
+			const visibleRangeMs =
+				latestVisibleRangeRef.current.end - latestVisibleRangeRef.current.start;
+
+			if (containerWidth <= 0 || visibleRangeMs <= 0) {
+				return;
+			}
+
+			if (ctrlKey || metaKey) {
+				if (shiftKey) {
+					const rawHorizontalDelta = Math.abs(deltaX) > 0 ? deltaX : deltaY;
+
+					if (rawHorizontalDelta === 0) {
+						return;
+					}
+
+					event.preventDefault();
+
+					const horizontalDeltaPx = normalizeWheelDeltaToPixels(rawHorizontalDelta, deltaMode);
+					const deltaMs = (horizontalDeltaPx / containerWidth) * visibleRangeMs;
+					panTimelineRange(deltaMs);
+					return;
+				}
+
+				if (deltaY === 0) {
+					return;
+				}
+
+				event.preventDefault();
+
+				const zoomDeltaPx = normalizeWheelDeltaToPixels(deltaY, deltaMode);
+				const deltaMs = (zoomDeltaPx / containerWidth) * visibleRangeMs;
+				zoomTimelineRange(deltaMs, clientX);
+				return;
+			}
+
+			const rawHorizontalDelta =
+				Math.abs(deltaX) > 0 ? deltaX : shiftKey && Math.abs(deltaY) > 0 ? deltaY : 0;
+
+			if (rawHorizontalDelta === 0) {
+				return;
+			}
+
 			event.preventDefault();
 
-			const horizontalDeltaPx = normalizeWheelDeltaToPixels(rawHorizontalDelta, event.deltaMode);
+			const horizontalDeltaPx = normalizeWheelDeltaToPixels(rawHorizontalDelta, deltaMode);
 			const deltaMs = (horizontalDeltaPx / containerWidth) * visibleRangeMs;
 
 			panTimelineRange(deltaMs);
 		},
-		[clampedRange.end, clampedRange.start, panTimelineRange, totalMs],
+		[panTimelineRange, totalMs, zoomTimelineRange],
 	);
 
 	if (!videoDuration || videoDuration === 0) {
@@ -1502,7 +1668,7 @@ export default function TimelineEditor({
 	}
 
 	return (
-		<div className="flex-1 min-h-0 flex flex-col bg-[#09090b] overflow-auto">
+		<div className="flex-1 min-h-0 flex flex-col bg-[#09090b] overflow-hidden">
 			<div className="flex items-center gap-2 px-4 py-2 border-b border-white/5 bg-[#09090b]">
 				<div className="flex items-center gap-1">
 					<Button
@@ -1648,7 +1814,7 @@ export default function TimelineEditor({
 				ref={timelineContainerRef}
 				className="flex-1 min-h-0 overflow-auto bg-[#09090b] relative"
 				onClick={() => setSelectedKeyframeId(null)}
-				onWheel={handleTimelineWheel}
+				onWheelCapture={handleTimelineWheel}
 			>
 				<TimelineWrapper
 					range={clampedRange}
@@ -1673,6 +1839,7 @@ export default function TimelineEditor({
 						videoDurationMs={totalMs}
 						currentTimeMs={currentTimeMs}
 						onSeek={onSeek}
+						onAutoPanAtRightEdge={autoPanPlayheadAtRightEdge}
 						onSelectZoom={onSelectZoom}
 						onSelectTrim={onSelectTrim}
 						onSelectAnnotation={onSelectAnnotation}
